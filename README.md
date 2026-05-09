@@ -1,4 +1,4 @@
-<h1 align="center">🇺🇸 Summer Stash</h1>
+<h1 align="center">Summer Stash</h1>
 
 <h3 align="center">
   Web app para gestionar dinero, gastos y objetivos durante una experiencia Work & Travel en USA

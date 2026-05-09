@@ -259,7 +259,7 @@ function buildInsights(input: InsightInput) {
     alerts.push({
       tone: "danger",
       title: "Poco dinero libre.",
-      body: "Un gasto grande ahora afectaría a tus objetivos de viajes, iPhone o vuelta a España."
+      body: "Un gasto grande ahora podría afectar a tus objetivos importantes y al dinero que ya tienes reservado."
     });
   }
 

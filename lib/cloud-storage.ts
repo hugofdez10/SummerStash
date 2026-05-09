@@ -36,15 +36,20 @@ export function hasSeedRecords(data: AppData) {
   );
 }
 
-export function accountStartData(localData: AppData): AppData {
-  const withoutSeeds = stripSeedData(localData);
-  const hasUserData =
+export function hasUserRecords(data: AppData) {
+  const withoutSeeds = stripSeedData(data);
+  return (
     withoutSeeds.transactions.length > 0 ||
     withoutSeeds.goals.length > 0 ||
     withoutSeeds.tripPlans.length > 0 ||
-    withoutSeeds.budgets.length > 0;
+    withoutSeeds.budgets.length > 0
+  );
+}
 
-  if (hasUserData) {
+export function accountStartData(localData: AppData): AppData {
+  const withoutSeeds = stripSeedData(localData);
+
+  if (hasUserRecords(withoutSeeds)) {
     return withoutSeeds;
   }
 

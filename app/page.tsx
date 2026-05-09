@@ -51,7 +51,7 @@ import {
   toBase,
   weeklySavingNeeded
 } from "@/lib/calculations";
-import { accountStartData, hasSeedRecords, loadCloudData, saveCloudData, stripSeedData } from "@/lib/cloud-storage";
+import { accountStartData, hasSeedRecords, hasUserRecords, loadCloudData, saveCloudData, stripSeedData } from "@/lib/cloud-storage";
 import { clearData, createId, loadData, saveData } from "@/lib/storage";
 import { defaultSettings, emptyData, initialData } from "@/lib/seed";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
@@ -270,9 +270,12 @@ export default function Page() {
 
       try {
         const cloudData = await loadCloudData(user.id);
-        const nextData = cloudData ? stripSeedData(cloudData) : accountStartData(loadData());
+        const localAccountData = accountStartData(loadData());
+        const cloudAccountData = cloudData ? stripSeedData(cloudData) : null;
+        const shouldPromoteLocalData = Boolean(cloudAccountData && !hasUserRecords(cloudAccountData) && hasUserRecords(localAccountData));
+        const nextData = cloudAccountData && !shouldPromoteLocalData ? cloudAccountData : localAccountData;
 
-        if (!cloudData || hasSeedRecords(cloudData)) {
+        if (!cloudData || shouldPromoteLocalData || hasSeedRecords(cloudData)) {
           await saveCloudData(user.id, nextData);
         }
 

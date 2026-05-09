@@ -143,6 +143,16 @@ Objetivos personales que el usuario quiere conseguir durante o después del vera
 - LocalStorage para persistencia inicial
 - Datos de ejemplo para primera experiencia de uso
 
+### Supabase data sync
+
+La app sincroniza los datos de cada cuenta en la tabla `public.user_app_data`. Para activarlo en un proyecto nuevo de Supabase:
+
+1. Abre Supabase Dashboard.
+2. Entra en SQL Editor.
+3. Ejecuta el contenido de `supabase/user_app_data.sql`.
+
+Cuando un usuario inicia sesion, la app borra automaticamente los datos de ejemplo. Si ese navegador tenia movimientos reales guardados en local, los sube a la cuenta la primera vez; despues, movil y ordenador cargan los mismos datos desde Supabase.
+
 ### Herramientas
 
 - Git

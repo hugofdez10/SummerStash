@@ -51,6 +51,7 @@ import {
   toBase,
   weeklySavingNeeded
 } from "@/lib/calculations";
+import { accountStartData, hasSeedRecords, loadCloudData, saveCloudData, stripSeedData } from "@/lib/cloud-storage";
 import { clearData, createId, loadData, saveData } from "@/lib/storage";
 import { defaultSettings, emptyData, initialData } from "@/lib/seed";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
@@ -208,7 +209,13 @@ export default function Page() {
   const [filters, setFilters] = useState<Filters>(emptyFilters);
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [user, setUser] = useState<User | null>(null);
+  const [syncMessage, setSyncMessage] = useState("");
+  const [syncError, setSyncError] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const cloudSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const loadedCloudUserRef = useRef<string | null>(null);
+  const skipNextCloudSaveRef = useRef(false);
 
   useEffect(() => {
     if (process.env.NODE_ENV !== "production" || !("serviceWorker" in navigator)) return;
@@ -232,6 +239,101 @@ export default function Page() {
     saveData(data);
     document.documentElement.classList.toggle("dark", data.settings.darkMode);
   }, [data, ready]);
+
+  useEffect(() => {
+    if (!supabase) return;
+
+    supabase.auth.getUser().then(({ data }) => setUser(data.user));
+    const {
+      data: { subscription }
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!ready || !user) {
+      loadedCloudUserRef.current = null;
+      return;
+    }
+
+    if (loadedCloudUserRef.current === user.id) return;
+
+    let cancelled = false;
+    setSyncError("");
+    setSyncMessage("Sincronizando cuenta...");
+
+    async function syncAccount() {
+      if (!user) return;
+
+      try {
+        const cloudData = await loadCloudData(user.id);
+        const nextData = cloudData ? stripSeedData(cloudData) : accountStartData(loadData());
+
+        if (!cloudData || hasSeedRecords(cloudData)) {
+          await saveCloudData(user.id, nextData);
+        }
+
+        if (cancelled) return;
+
+        skipNextCloudSaveRef.current = true;
+        loadedCloudUserRef.current = user.id;
+        setData(nextData);
+        saveData(nextData);
+        setSyncMessage(cloudData ? "Datos cargados de tu cuenta." : "Cuenta iniciada sin datos de prueba.");
+      } catch (error) {
+        if (cancelled) return;
+        const rawMessage = error instanceof Error ? error.message : "No se ha podido sincronizar con Supabase.";
+        const message = rawMessage.includes("user_app_data")
+          ? "Falta crear la tabla user_app_data en Supabase. Ejecuta el SQL de supabase/user_app_data.sql."
+          : rawMessage;
+        setSyncError(message);
+        setSyncMessage("");
+      }
+    }
+
+    syncAccount();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [ready, user]);
+
+  useEffect(() => {
+    if (!ready || !user || loadedCloudUserRef.current !== user.id) return;
+
+    if (skipNextCloudSaveRef.current) {
+      skipNextCloudSaveRef.current = false;
+      return;
+    }
+
+    if (cloudSaveTimerRef.current) {
+      clearTimeout(cloudSaveTimerRef.current);
+    }
+
+    cloudSaveTimerRef.current = setTimeout(() => {
+      setSyncError("");
+      setSyncMessage("Guardando en tu cuenta...");
+      saveCloudData(user.id, data)
+        .then(() => setSyncMessage("Guardado en tu cuenta."))
+        .catch((error) => {
+          const rawMessage = error instanceof Error ? error.message : "No se ha podido guardar en Supabase.";
+          const message = rawMessage.includes("user_app_data")
+            ? "Falta crear la tabla user_app_data en Supabase. Ejecuta el SQL de supabase/user_app_data.sql."
+            : rawMessage;
+          setSyncError(message);
+          setSyncMessage("");
+        });
+    }, 500);
+
+    return () => {
+      if (cloudSaveTimerRef.current) {
+        clearTimeout(cloudSaveTimerRef.current);
+      }
+    };
+  }, [data, ready, user]);
 
   const calc = useMemo(() => calculateApp(data), [data]);
 
@@ -361,26 +463,12 @@ export default function Page() {
   }
 
   function removeSeedData() {
-    setAndPersist((current) => ({
-      ...current,
-      transactions: current.transactions.filter((item) => !item.id.startsWith("seed-")),
-      goals: current.goals.filter((item) => !item.id.startsWith("seed-")),
-      tripPlans: current.tripPlans.filter((item) => !item.id.startsWith("seed-")),
-      budgets: current.budgets.filter((item) => !item.id.startsWith("seed-")),
-      hasSeedData: false
-    }));
+    setAndPersist((current) => stripSeedData(current));
   }
 
   function resetEverything() {
     clearData();
-    setData({ ...initialData, settings: { ...defaultSettings } });
-    setFilters(emptyFilters);
-    setView("dashboard");
-  }
-
-  function resetToEmptyData() {
-    clearData();
-    setData({ ...emptyData, settings: { ...defaultSettings, darkMode: data.settings.darkMode } });
+    setData(user ? { ...emptyData, settings: { ...defaultSettings, darkMode: data.settings.darkMode } } : { ...initialData, settings: { ...defaultSettings } });
     setFilters(emptyFilters);
     setView("dashboard");
   }
@@ -579,12 +667,14 @@ export default function Page() {
           {view === "settings" && (
             <SettingsView
               data={data}
+              user={user}
+              syncMessage={syncMessage}
+              syncError={syncError}
               setData={setAndPersist}
               onExport={exportJson}
               onImport={() => fileInputRef.current?.click()}
               onReset={resetEverything}
               onRemoveSeed={removeSeedData}
-              onFreshAccount={resetToEmptyData}
             />
           )}
         </section>
@@ -1065,24 +1155,28 @@ function BudgetsView({
 
 function SettingsView({
   data,
+  user,
+  syncMessage,
+  syncError,
   setData,
   onExport,
   onImport,
   onReset,
-  onRemoveSeed,
-  onFreshAccount
+  onRemoveSeed
 }: {
   data: AppData;
+  user: User | null;
+  syncMessage: string;
+  syncError: string;
   setData: (next: AppData | ((current: AppData) => AppData)) => void;
   onExport: () => void;
   onImport: () => void;
   onReset: () => void;
   onRemoveSeed: () => void;
-  onFreshAccount: () => void;
 }) {
   return (
     <div className="grid gap-5 xl:grid-cols-2">
-      <SupabaseAccountCard onFreshAccount={onFreshAccount} />
+      <SupabaseAccountCard user={user} syncMessage={syncMessage} syncError={syncError} />
       <div className="card">
         <p className="label">Configuración</p>
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
@@ -1165,32 +1259,26 @@ function SettingsView({
           </button>
         </div>
         <p className="mt-4 text-sm text-muted dark:text-slate-400">
-          Todo se guarda en localStorage del navegador. No se usa base de datos externa.
+          Sin cuenta se guarda en este navegador. Con sesión iniciada, los datos se sincronizan con Supabase.
         </p>
       </div>
     </div>
   );
 }
 
-function SupabaseAccountCard({ onFreshAccount }: { onFreshAccount: () => void }) {
-  const [user, setUser] = useState<User | null>(null);
+function SupabaseAccountCard({
+  user,
+  syncMessage,
+  syncError
+}: {
+  user: User | null;
+  syncMessage: string;
+  syncError: string;
+}) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
-
-  useEffect(() => {
-    if (!supabase) return;
-
-    supabase.auth.getUser().then(({ data }) => setUser(data.user));
-    const {
-      data: { subscription }
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null);
-    });
-
-    return () => subscription.unsubscribe();
-  }, []);
 
   async function createAccount() {
     if (!supabase) return;
@@ -1204,9 +1292,7 @@ function SupabaseAccountCard({ onFreshAccount }: { onFreshAccount: () => void })
       return;
     }
 
-    setUser(data.user ?? null);
-    onFreshAccount();
-    setMessage("Cuenta creada. He puesto todos los datos a 0.");
+    setMessage(data.user ? "Cuenta creada. Preparando tus datos sin ejemplos." : "Revisa tu email para confirmar la cuenta.");
   }
 
   async function login() {
@@ -1221,7 +1307,6 @@ function SupabaseAccountCard({ onFreshAccount }: { onFreshAccount: () => void })
   async function logout() {
     if (!supabase) return;
     await supabase.auth.signOut();
-    setUser(null);
     setMessage("Sesión cerrada.");
   }
 
@@ -1263,6 +1348,12 @@ function SupabaseAccountCard({ onFreshAccount }: { onFreshAccount: () => void })
       ) : null}
 
       {message && <p className="mt-3 text-sm font-semibold text-blue-700 dark:text-blue-300">{message}</p>}
+      {syncMessage && <p className="mt-3 text-sm font-semibold text-emerald-700 dark:text-emerald-300">{syncMessage}</p>}
+      {syncError && (
+        <div className="mt-3 rounded-2xl border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-200">
+          {syncError}
+        </div>
+      )}
     </div>
   );
 }
